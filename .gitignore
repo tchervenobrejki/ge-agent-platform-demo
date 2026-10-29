@@ -1,0 +1,26 @@
+.DS_Store
+
+# Local configuration and credentials
+.env
+terraform.tfvars
+
+# Terraform
+.terraform/
+.terraform-*/
+*.tfstate
+*.tfstate.*
+*.tfplan
+plan.txt
+
+# Local run output (traces, grading results, session databases, logs)
+artifacts/
+.adk/
+.google-agents-cli/
+deployment_metadata.json
+deployment_metadata.json.lock
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/

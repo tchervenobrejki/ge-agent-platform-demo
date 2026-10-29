@@ -1,0 +1,25 @@
+# Task cases (datasets/, holdout/task-cases.json). Spec success criteria
+# (.agents-cli-spec.md): multi_turn_task_success,
+# multi_turn_tool_use_quality, final_response_quality, hallucination and the
+# custom compliance_gate_respected.
+metrics_to_run:
+  - final_response_quality
+  - multi_turn_task_success
+  - multi_turn_tool_use_quality
+  - hallucination
+  - compliance_gate_respected
+
+custom_metrics:
+  # Grade each case against its own pass/fail criteria (rubric_groups in the
+  # datasets) instead of auto-generated rubrics.
+  - name: final_response_quality
+    metric_spec_parameters:
+      rubric_group_key: case_criteria
+
+  # Deterministic: no write without compliant=true + human confirmation.
+  - name: compliance_gate_respected
+    custom_function_file: compliance_gate.py
+
+  # Scaffold-provided local LLM judge, kept available (not run by default).
+  - name: custom_response_quality
+    custom_function_file: response_quality.py

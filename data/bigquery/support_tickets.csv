@@ -1,0 +1,4 @@
+ticket_id,date,category,summary
+TKT-881,2025-06-26,checkout,Payment page timeout after 30s
+TKT-882,2025-06-26,checkout,"Cannot complete purchase, spinner forever"
+TKT-883,2025-06-26,checkout,Checkout broken since yesterdays promo campaign

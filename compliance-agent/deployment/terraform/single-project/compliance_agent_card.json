@@ -1,0 +1,55 @@
+{
+  "capabilities": {
+    "extensions": [
+      {
+        "description": "Ability to use the new agent executor implementation",
+        "required": false,
+        "uri": "https://google.github.io/adk-docs/a2a/a2a-extension/"
+      }
+    ],
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "Runs policy compliance checks for proposed remediation actions.",
+  "name": "compliance_agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.3",
+  "skills": [
+    {
+      "description": "Runs policy compliance checks for proposed remediation actions.",
+      "id": "compliance_agent",
+      "name": "model",
+      "tags": [
+        "llm"
+      ]
+    },
+    {
+      "description": "Check whether a proposed action complies with company policy.\n\nRead-only governance tool. Call before any write/action tool.\n\nArgs:\n    action_type: Type of action. Must be one of RECOGNIZED_ACTIONS, e.g.\n        'pause_campaign_segment', 'escalate_checkout_fix', 'pause_campaign',\n        'create_discount', 'approve_discount', 'increase_budget',\n        'create_remediation_ticket'. Any other value is treated as\n        non-compliant pending manual review.\n    details: Action details including campaign_id, amount, percentage, reason.\n\nReturns:\n    dict with status, compliant (bool), violations (list), and recommendation.",
+      "id": "compliance_agent-check_action_compliance",
+      "name": "check_action_compliance",
+      "tags": [
+        "llm",
+        "tools"
+      ]
+    }
+  ],
+  "supportedInterfaces": [
+    {
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0",
+      "url": "${service_url}/a2a/app"
+    },
+    {
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "0.3",
+      "url": "${service_url}/a2a/app"
+    }
+  ],
+  "url": "${service_url}/a2a/app",
+  "version": "0.1.0"
+}

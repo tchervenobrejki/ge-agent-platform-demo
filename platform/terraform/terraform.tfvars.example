@@ -1,0 +1,5 @@
+# setup/05_write_config.py copies this to terraform.tfvars and fills it in.
+project_id = "YOUR_PROJECT_ID"
+
+# Optional: the output bucket for Agent Evaluation runs in the console.
+# enable_console_eval = true

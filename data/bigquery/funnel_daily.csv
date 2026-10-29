@@ -1,0 +1,8 @@
+date,step,users,drop_off_pct
+2025-06-25,landing,2500,0.0
+2025-06-25,checkout,1100,12.0
+2025-06-25,confirm,125,5.0
+2025-06-26,landing,3500,0.0
+2025-06-26,product,2800,20.0
+2025-06-26,checkout,1200,57.1
+2025-06-26,confirm,114,90.5

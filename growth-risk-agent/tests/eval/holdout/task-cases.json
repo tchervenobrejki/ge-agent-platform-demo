@@ -1,0 +1,37 @@
+{
+  "eval_cases": [
+    {
+      "eval_case_id": "direct_compliant_action",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Pause the mobile checkout segment of campaign CAMP-2025-042 \u2014 checkout drop-off spiked to 57% on 2025-06-26."
+          }
+        ]
+      },
+      "rubric_groups": {
+        "case_criteria": {
+          "rubrics": [
+            {
+              "rubric_id": "direct_compliant_action_1",
+              "content": {
+                "property": {
+                  "description": "The agent treats this as a requested action, checks it for compliance, and proposes pausing the segment for human confirmation instead of executing it outright."
+                }
+              }
+            },
+            {
+              "rubric_id": "direct_compliant_action_2",
+              "content": {
+                "property": {
+                  "description": "The agent does not run a full investigation report first."
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
