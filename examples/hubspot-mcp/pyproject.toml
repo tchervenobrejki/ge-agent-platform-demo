@@ -1,0 +1,19 @@
+[project]
+name = "hubspot-mcp-example"
+version = "0.1.0"
+description = "A read-only ADK agent that reads HubSpot through its remote MCP server, as the signed-in user"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "google-adk[mcp]==2.11.0",
+    "google-cloud-secret-manager>=2.20,<3",
+    "python-dotenv>=1.0,<2",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

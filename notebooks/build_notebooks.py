@@ -956,9 +956,291 @@ agents-cli publish gemini --registration-type a2a \\
 
 The [`google-agents-cli-publish`](https://github.com/google/agents-cli/tree/main/skills/google-agents-cli-publish) skill has the details.
 
-Next: [99 · Cleanup](99_cleanup.ipynb).
+Next: [10 · Connect an agent to HubSpot over MCP](10_hubspot_mcp.ipynb) (optional), or
+[99 · Cleanup](99_cleanup.ipynb).
 """)
 save("09_publish.ipynb")
+
+# ===========================================================================
+# 10 HubSpot over MCP (optional, independent of the other notebooks)
+# ===========================================================================
+start(
+    "10 · Connect an agent to HubSpot over MCP",
+    """
+An agent that reads a SaaS application **as the signed-in user**, through the vendor's own remote MCP server.
+The example is HubSpot's CRM; the steps are the same for any MCP server protected by OAuth.
+
+This notebook is independent of the others: it needs a Google Cloud project and a HubSpot account, nothing from
+notebooks 00–09. The agent is in [`examples/hubspot-mcp/`](../examples/hubspot-mcp/), with its own README.
+""",
+)
+md("""
+## Two ways an agent authenticates to an MCP server
+
+| | The remediation MCP server (notebook 03) | HubSpot's MCP server (this notebook) |
+|---|---|---|
+| Who runs the server | you, on Cloud Run | the vendor |
+| Who the agent is | a **service identity** (impersonated service account, ID token) | the **user** (OAuth sign-in, access token) |
+| What it may do | what you granted the service account | what that user may do in HubSpot |
+| Who consents | nobody: IAM decides | the user, on HubSpot's consent screen |
+
+With user sign-in, the agent can never see more than the user could; but it can see *everything* the user can,
+including write tools. So the agent narrows it down itself.
+
+## The general steps
+
+1. **Discover** how the server wants clients to sign in: it publishes this at well-known URLs.
+2. **Register a client** with the vendor: you get a client ID and secret, and declare redirect URLs.
+3. **Store the secret** in Secret Manager, never in code, `.env` or a notebook.
+4. **Give the agent an `McpToolset` with `auth_scheme` and `auth_credential`.** ADK then runs the sign-in, keeps
+   the token and sends it on every MCP request.
+5. **Restrict the agent** to the tools, arguments and fields it needs.
+6. **Approve and sign in**: an admin may need to approve the app; each user consents once.
+
+## Before you start
+
+- A HubSpot account in which you can open **Development → MCP Auth Apps** (see HubSpot's guide,
+  [Integrate with the remote HubSpot MCP server](https://developers.hubspot.com/docs/apps/developer-platform/build-apps/integrate-with-the-remote-hubspot-mcp-server)).
+- There, **Create MCP auth app**: any name, and the redirect URL `http://localhost:8000/dev-ui/`, where `adk web`
+  receives the sign-in result. Its details page then shows the **client ID** and **client secret**.
+- Secret Manager rights in your project: *Secret Manager Admin* to create the secret.
+
+Cells marked ⚠️ change something in Google Cloud and ask first. The client secret is only ever typed into a hidden
+prompt and sent straight to Secret Manager.
+""")
+md("## Your settings")
+code("""
+HUBSPOT_CLIENT_ID = ""  # <-- from the MCP auth app's details page (not a secret)
+HUBSPOT_MCP_URL = "https://mcp.hubspot.com"  # https://mcp-eu1.hubspot.com for EU-hosted HubSpot accounts
+REDIRECT_URI = "http://localhost:8000/dev-ui/"  # must be one of the app's redirect URLs
+SECRET_NAME = "hubspot-mcp-client-secret"
+
+EXAMPLE = REPO / "examples/hubspot-mcp"
+os.environ.update(SECRET_NAME=SECRET_NAME, EXAMPLE=str(EXAMPLE))
+assert HUBSPOT_CLIENT_ID.strip(), "Fill in HUBSPOT_CLIENT_ID first."
+""")
+md("""
+## 1. Discover how to sign in
+
+This needs no account. An MCP server that requires OAuth answers an anonymous request with **401** and a
+`WWW-Authenticate` header naming its *protected resource metadata* ([RFC 9728](https://www.rfc-editor.org/rfc/rfc9728)).
+That names the authorization server, whose own metadata ([RFC 8414](https://www.rfc-editor.org/rfc/rfc8414)) gives
+the sign-in and token URLs and what the server requires. HubSpot requires **PKCE with S256** and accepts the secret
+only as **client_secret_post**; the agent's `OAuth2Auth` sets both.
+""")
+code("""
+import json
+import urllib.error
+import urllib.request
+
+
+def get_json(url: str) -> dict:
+    with urllib.request.urlopen(url, timeout=20) as response:
+        return json.load(response)
+
+
+base = HUBSPOT_MCP_URL.rstrip("/")
+probe = urllib.request.Request(base + "/", data=b"{}", headers={"Content-Type": "application/json"})
+try:
+    urllib.request.urlopen(probe, timeout=20)
+except urllib.error.HTTPError as e:
+    print("Anonymous request:", e.code, "| WWW-Authenticate:", e.headers.get("WWW-Authenticate"))
+
+resource = get_json(f"{base}/.well-known/oauth-protected-resource")
+server = get_json(f"{base}/.well-known/oauth-authorization-server")
+AUTHORIZATION_URL, TOKEN_URL = server["authorization_endpoint"], server["token_endpoint"]
+print("Authorization server:", resource.get("authorization_servers"))
+print("Sign-in URL:         ", AUTHORIZATION_URL)
+print("Token URL:           ", TOKEN_URL)
+print("PKCE methods:        ", server.get("code_challenge_methods_supported"))
+print("Secret sent as:      ", server.get("token_endpoint_auth_methods_supported"))
+assert "S256" in server.get("code_challenge_methods_supported", []), "PKCE S256 no longer offered"
+assert "client_secret_post" in server.get("token_endpoint_auth_methods_supported", []), "update OAuth2Auth in agent.py"
+""")
+md("## 2. ⚠️ Enable Secret Manager")
+bash('gcloud services enable secretmanager.googleapis.com --project "$PROJECT" && echo "Secret Manager enabled"')
+md("""
+## 3. ⚠️ Store the client secret
+
+Copy the **client secret** from the app's details page into the hidden prompt. If the secret already exists, a new
+version is added; the agent always reads the latest. It is replicated only in your region.
+""")
+code("""
+from getpass import getpass
+
+from google.api_core.exceptions import NotFound
+from google.cloud import secretmanager
+
+sm = secretmanager.SecretManagerServiceClient()
+secret_path = f"projects/{PROJECT}/secrets/{SECRET_NAME}"
+try:
+    sm.get_secret(name=secret_path)
+    exists = True
+except NotFound:
+    exists = False
+
+question = f"Add a new version to {SECRET_NAME}?" if exists else f"Create secret {SECRET_NAME} in {PROJECT} ({REGION})?"
+if input(question + " (yes/no) ").strip().lower() != "yes":
+    print("Nothing changed.")
+else:
+    if not exists:
+        sm.create_secret(
+            parent=f"projects/{PROJECT}",
+            secret_id=SECRET_NAME,
+            secret={
+                "replication": {"user_managed": {"replicas": [{"location": REGION}]}},
+                "labels": {"app": "hubspot-mcp-example"},
+            },
+        )
+    value = getpass("Paste the HubSpot client secret (hidden): ").strip()
+    assert value, "Empty secret: nothing stored."
+    version = sm.add_secret_version(parent=secret_path, payload={"data": value.encode()})
+    del value
+    print("Stored as", version.name)
+""")
+md("Check it can be read. This shows only its length, never the value.")
+code("""
+latest = sm.access_secret_version(name=f"{secret_path}/versions/latest")
+print(f"Readable: version {latest.name.rsplit('/', 1)[-1]}, {len(latest.payload.data)} characters")
+""")
+md("""
+## 4. Configure the agent
+
+Writes the settings into `examples/hubspot-mcp/.env` (git-ignored), keeping any other lines. The secret is not
+written: the agent reads it from Secret Manager with your login.
+""")
+code("""
+settings = {
+    "GOOGLE_CLOUD_PROJECT": PROJECT,
+    "GOOGLE_CLOUD_LOCATION": REGION,
+    "HUBSPOT_CLIENT_ID": HUBSPOT_CLIENT_ID.strip(),
+    "HUBSPOT_CLIENT_SECRET_NAME": SECRET_NAME,
+    "HUBSPOT_REDIRECT_URI": REDIRECT_URI,
+    "HUBSPOT_MCP_URL": HUBSPOT_MCP_URL,
+    "HUBSPOT_AUTHORIZATION_URL": AUTHORIZATION_URL,
+    "HUBSPOT_TOKEN_URL": TOKEN_URL,
+}
+env_file = EXAMPLE / ".env"
+lines = (env_file if env_file.exists() else EXAMPLE / ".env.example").read_text().splitlines()
+lines = [line for line in lines if line.split("=", 1)[0].strip() not in settings]
+env_file.write_text("\\n".join(lines + [f"{k}={v}" for k, v in settings.items()]) + "\\n")
+for key, value in settings.items():
+    print(f"{key}={value}")
+""")
+md("""
+## 5. Read the agent
+
+The whole HubSpot connection is one toolset. Because it has an `auth_scheme`, ADK asks the user to sign in
+*before* it lists the tools (HubSpot answers 401 without a token), exchanges the returned code for a token and
+sends it as a Bearer header on every MCP request.
+""")
+code('show("examples/hubspot-mcp/hubspot_agent/agent.py", "def hubspot_toolset")')
+md("""
+MCP auth apps have no scopes of their own: HubSpot grants what the server's tools need, limited by the user's
+permissions, and the server also offers write tools. So the agent restricts itself in three layers:
+""")
+code('show("examples/hubspot-mcp/hubspot_agent/agent.py", "READ_ONLY_TOOLS =")')
+code('show("examples/hubspot-mcp/hubspot_agent/agent.py", "ALLOWED_PROPERTIES =")')
+notes(
+    "**`tool_filter`** decides which tools the model gets. An allow-list, so tools HubSpot adds later stay off "
+    "until someone reviews them.",
+    "**`before_tool_callback`** (`guard_hubspot_call`) checks the arguments: only allowed object types and fields. "
+    "Returning a dict skips the call. When no fields are named, it asks for the allowed ones, because HubSpot's "
+    "defaults include a deal's amount.",
+    "**`after_tool_callback`** (`filter_hubspot_response`) drops any other field from what comes back, including "
+    "fields HubSpot adds by itself, before the model sees it.",
+    "HubSpot's tools ask the model to describe the user's request in a `chatInsights` argument on every call; the "
+    "guard sends a fixed value instead.",
+)
+md("""
+## 6. Check it without HubSpot
+
+The example's tests run offline: the policy, and that the agent's first step is a sign-in request with your
+client ID, redirect URL and a PKCE challenge. The second cell loads the agent with your `.env` and secret.
+""")
+bash('cd "$EXAMPLE" && uv sync -q && uv run -q pytest -q -p no:warnings 2>&1 | tail -1')
+code('''
+import subprocess
+
+check = """
+from hubspot_agent import agent
+print("client ID:     ", agent.CLIENT_ID)
+print("MCP server:    ", agent.HUBSPOT_MCP_URL)
+print("redirect URL:  ", agent.REDIRECT_URI)
+print("secret loaded: ", bool(agent.client_secret()))
+print("tools allowed: ", ", ".join(agent.READ_ONLY_TOOLS))
+"""
+result = subprocess.run(["uv", "run", "-q", "python", "-W", "ignore", "-c", check], cwd=EXAMPLE, capture_output=True, text=True)
+print(result.stdout or result.stderr[-2000:])
+''')
+md("""
+## 7. In HubSpot: approve the app (first sign-in only)
+
+The first sign-in installs the app in the HubSpot account. Without install rights, HubSpot shows *"You don't have
+install access for this app"* with a **Request approval** button, which notifies the account's **Super Admins**
+inside HubSpot (tell them too). A Super Admin approves it:
+
+1. Settings (gear icon) → **Integrations → Connected Apps** → **Approved apps** → **Approve apps**.
+2. Select the app and click **Approve** in the "Manage access" banner.
+3. Choose who may install it: **Specific users and teams**, or everyone.
+4. Review the data permissions and click **Approve app**.
+
+The consent screen lists everything the server's tools could need; the agent still loads only its read tools.
+""")
+md("""
+## 8. Try it in `adk web`
+
+In a terminal (the redirect only works on port 8000 and with `localhost`, not `127.0.0.1`):
+
+```bash
+cd examples/hubspot-mcp
+uv run adk web --port 8000 .
+```
+
+Open **http://localhost:8000/dev-ui/?app=hubspot_agent** and start a session.
+
+1. `Who am I in HubSpot?` The agent asks you to sign in: a HubSpot window opens; sign in and click **Allow**.
+   It then answers with your HubSpot user. Later questions in the same session reuse the token.
+2. `List five companies, with their industry and country.`
+3. `What's the amount of the biggest open deal?` The amount isn't available: the guard asks only for allowed
+   fields, and the filter removes `amount` from anything returned.
+4. `Add a note to that company.` The agent says it's read-only: it has no write tool to call.
+
+Open the **Trace** and **Events** tabs to see each MCP call, the arguments the guard sent and the filtered results.
+
+**If it fails**
+- *redirect_uri mismatch*: the app lacks `http://localhost:8000/dev-ui/`, or you opened `127.0.0.1`.
+- *invalid client*: wrong client ID, or the stored secret belongs to another app.
+- Nothing found: the signed-in user can't see those records in HubSpot, or the account is in the other data centre
+  (`HUBSPOT_MCP_URL`).
+""")
+md("""
+## Beyond local testing
+
+- **Deployed agents.** Inject the secret as the `HUBSPOT_CLIENT_SECRET` environment variable from Secret Manager
+  (on Cloud Run, `--set-secrets`), or grant the agent's identity *Secret Manager Secret Accessor* on it, and set
+  `HUBSPOT_REDIRECT_URI` to the URL of the client that runs the sign-in.
+- **Gemini Enterprise** runs the sign-in itself for registered agents, through an *authorization* resource holding
+  the same client ID and secret. HubSpot's app then also needs Gemini Enterprise's redirect URLs,
+  `https://vertexaisearch.cloud.google.com/oauth-redirect` and
+  `https://vertexaisearch.cloud.google.com/static/oauth/oauth.html`. This repo doesn't cover that path end to end.
+
+## Another MCP server
+
+| Step | What changes |
+|---|---|
+| Discover | the server URL; the same well-known metadata tells you the rest |
+| Register a client | in that vendor's developer console; some servers also offer dynamic client registration (`registration_endpoint` in the metadata) |
+| `OAuth2Auth` | PKCE and the token auth method, as the metadata says; scopes, if the vendor uses them |
+| Restrict | that server's tool names, arguments and response shape |
+
+## Clean up
+
+⚠️ Deletes the secret. Then delete the MCP auth app in HubSpot (Development → MCP Auth Apps) if you no longer
+need it.
+""")
+bash('gcloud secrets delete "$SECRET_NAME" --project "$PROJECT" --quiet')
+save("10_hubspot_mcp.ipynb")
 
 # ===========================================================================
 # 99 Cleanup
